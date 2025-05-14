@@ -1,0 +1,324 @@
+<!DOCTYPE html><html><head><meta charset="UTF8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fluid Dynamics Visualization</title>
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.8.0/lib/p5.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        #canvas-container {
+            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: center;
+            position: relative;
+        }
+    </style>
+
+<base target="_self">
+
+
+    </head><body><div id="canvas-container"></div>
+
+    <script>
+        const fluidSimulation = (p) => {
+            // Fluid simulation parameters
+            let fluid;
+            let cols, rows;
+            let resolution = 20;
+            let damping = 0.98;
+            let viscosity = 0.001;
+            let diffusion = 0.0001;
+            let dt = 0.1;
+            let forceScale = 100;
+            let colorPalette = [];
+            
+            // Interaction variables
+            let prevMouseX = 0;
+            let prevMouseY = 0;
+            let showStreamlines = false;
+            let showVorticity = false;
+            
+            p.setup = () => {
+                let canvas = p.createCanvas(p.min(p.windowWidth, 1200), p.min(p.windowHeight, 800), p.WEBGL);
+                canvas.parent('canvas-container');
+                
+                cols = Math.floor(p.width / resolution);
+                rows = Math.floor(p.height / resolution);
+                
+                // Initialize fluid simulation
+                fluid = {
+                    density: new Array(cols * rows).fill(0),
+                    velocityX: new Array(cols * rows).fill(0),
+                    velocityY: new Array(cols * rows).fill(0),
+                    velocityX0: new Array(cols * rows).fill(0),
+                    velocityY0: new Array(cols * rows).fill(0)
+                };
+                
+                // Create color palette
+                colorPalette = [
+                    p.color(10, 10, 30),
+                    p.color(20, 50, 100),
+                    p.color(50, 100, 150),
+                    p.color(100, 150, 200),
+                    p.color(150, 200, 255),
+                    p.color(200, 150, 100),
+                    p.color(255, 100, 50)
+                ];
+                
+                p.colorMode(p.HSB, 360, 100, 100, 1);
+                p.noStroke();
+            };
+            
+            p.draw = () => {
+                p.background(0);
+                p.translate(-p.width/2, -p.height/2);
+                
+                // Update fluid simulation
+                updateFluid();
+                
+                // Render fluid
+                renderFluid();
+                
+                // Handle mouse interaction
+                if (p.mouseIsPressed && p.mouseX > 0 && p.mouseX < p.width && p.mouseY > 0 && p.mouseY < p.height) {
+                    addForceToFluid();
+                }
+                
+                prevMouseX = p.mouseX;
+                prevMouseY = p.mouseY;
+            };
+            
+            function updateFluid() {
+                // Diffuse velocity
+                diffuse(1, fluid.velocityX0, fluid.velocityX, viscosity, dt);
+                diffuse(2, fluid.velocityY0, fluid.velocityY, viscosity, dt);
+                
+                // Project velocity to maintain incompressibility
+                project(fluid.velocityX0, fluid.velocityY0, fluid.velocityX, fluid.velocityY);
+                
+                // Advect velocity
+                advect(1, fluid.velocityX, fluid.velocityX0, fluid.velocityX0, fluid.velocityY0, dt);
+                advect(2, fluid.velocityY, fluid.velocityY0, fluid.velocityX0, fluid.velocityY0, dt);
+                
+                // Project again
+                project(fluid.velocityX, fluid.velocityY, fluid.velocityX0, fluid.velocityY0);
+                
+                // Diffuse density
+                diffuse(0, fluid.density, fluid.density, diffusion, dt);
+                
+                // Advect density
+                advect(0, fluid.density, fluid.density, fluid.velocityX, fluid.velocityY, dt);
+            }
+            
+            function renderFluid() {
+                for (let i = 0; i < cols; i++) {
+                    for (let j = 0; j < rows; j++) {
+                        const index = i + j * cols;
+                        const x = i * resolution;
+                        const y = j * resolution;
+                        
+                        // Calculate velocity magnitude for coloring
+                        const velX = fluid.velocityX[index];
+                        const velY = fluid.velocityY[index];
+                        const speed = p.sqrt(velX * velX + velY * velY);
+                        
+                        // Map speed to color
+                        const density = fluid.density[index];
+                        const col = p.lerpColor(
+                            colorPalette[0], 
+                            colorPalette[p.constrain(p.floor(speed * 50), 0, colorPalette.length - 1)], 
+                            p.constrain(density * 2, 0, 1)
+                        );
+                        
+                        p.fill(col);
+                        p.rect(x, y, resolution, resolution);
+                        
+                        // Optional streamlines
+                        if (showStreamlines) {
+                            p.stroke(255, 50);
+                            p.strokeWeight(1);
+                            p.line(
+                                x + resolution/2, 
+                                y + resolution/2, 
+                                x + resolution/2 + velX * 10, 
+                                y + resolution/2 + velY * 10
+                            );
+                            p.noStroke();
+                        }
+                    }
+                }
+            }
+            
+            function addForceToFluid() {
+                const mouseCol = p.constrain(p.floor(p.mouseX / resolution), 0, cols - 1);
+                const mouseRow = p.constrain(p.floor(p.mouseY / resolution), 0, rows - 1);
+                const prevCol = p.constrain(p.floor(prevMouseX / resolution), 0, cols - 1);
+                const prevRow = p.constrain(p.floor(prevMouseY / resolution), 0, rows - 1);
+                
+                // Calculate force direction based on mouse movement
+                const forceX = (p.mouseX - prevMouseX) * forceScale;
+                const forceY = (p.mouseY - prevMouseY) * forceScale;
+                
+                // Apply force to fluid
+                for (let i = -2; i <= 2; i++) {
+                    for (let j = -2; j <= 2; j++) {
+                        const col = p.constrain(mouseCol + i, 0, cols - 1);
+                        const row = p.constrain(mouseRow + j, 0, rows - 1);
+                        const index = col + row * cols;
+                        
+                        fluid.velocityX[index] += forceX;
+                        fluid.velocityY[index] += forceY;
+                        fluid.density[index] = p.constrain(fluid.density[index] + 0.1, 0, 1);
+                    }
+                }
+            }
+            
+            // Fluid simulation helper functions
+            function diffuse(b, x, x0, diff, dt) {
+                const a = dt * diff * (cols - 2) * (rows - 2);
+                for (let k = 0; k < 20; k++) {
+                    for (let i = 1; i < cols - 1; i++) {
+                        for (let j = 1; j < rows - 1; j++) {
+                            const index = i + j * cols;
+                            x[index] = (x0[index] + a * (
+                                x[i+1 + j*cols] + x[i-1 + j*cols] +
+                                x[i + (j+1)*cols] + x[i + (j-1)*cols]
+                            )) / (1 + 4 * a);
+                        }
+                    }
+                    setBoundary(b, x);
+                }
+            }
+            
+            function advect(b, d, d0, velocX, velocY, dt) {
+                let dt0x = dt * (cols - 2);
+                let dt0y = dt * (rows - 2);
+                
+                for (let i = 1; i < cols - 1; i++) {
+                    for (let j = 1; j < rows - 1; j++) {
+                        const index = i + j * cols;
+                        let x = i - dt0x * velocX[index];
+                        let y = j - dt0y * velocY[index];
+                        
+                        x = p.constrain(x, 0.5, cols - 1.5);
+                        y = p.constrain(y, 0.5, rows - 1.5);
+                        
+                        const i0 = p.floor(x);
+                        const i1 = i0 + 1;
+                        const j0 = p.floor(y);
+                        const j1 = j0 + 1;
+                        
+                        const s1 = x - i0;
+                        const s0 = 1 - s1;
+                        const t1 = y - j0;
+                        const t0 = 1 - t1;
+                        
+                        d[index] = s0 * (t0 * d0[i0 + j0*cols] + t1 * d0[i0 + j1*cols]) +
+                                   s1 * (t0 * d0[i1 + j0*cols] + t1 * d0[i1 + j1*cols]);
+                    }
+                }
+                setBoundary(b, d);
+            }
+            
+            function project(velocX, velocY, p, div) {
+                for (let i = 1; i < cols - 1; i++) {
+                    for (let j = 1; j < rows - 1; j++) {
+                        const index = i + j * cols;
+                        div[index] = -0.5 * (
+                            velocX[i+1 + j*cols] - velocX[i-1 + j*cols] +
+                            velocY[i + (j+1)*cols] - velocY[i + (j-1)*cols]
+                        ) / cols;
+                        p[index] = 0;
+                    }
+                }
+                setBoundary(0, div);
+                setBoundary(0, p);
+                
+                for (let k = 0; k < 20; k++) {
+                    for (let i = 1; i < cols - 1; i++) {
+                        for (let j = 1; j < rows - 1; j++) {
+                            const index = i + j * cols;
+                            p[index] = (div[index] + 
+                                p[i-1 + j*cols] + p[i+1 + j*cols] +
+                                p[i + (j-1)*cols] + p[i + (j+1)*cols]
+                            ) / 4;
+                        }
+                    }
+                    setBoundary(0, p);
+                }
+                
+                for (let i = 1; i < cols - 1; i++) {
+                    for (let j = 1; j < rows - 1; j++) {
+                        const index = i + j * cols;
+                        velocX[index] -= 0.5 * (p[i+1 + j*cols] - p[i-1 + j*cols]) * cols;
+                        velocY[index] -= 0.5 * (p[i + (j+1)*cols] - p[i + (j-1)*cols]) * rows;
+                    }
+                }
+                setBoundary(1, velocX);
+                setBoundary(2, velocY);
+            }
+            
+            function setBoundary(b, x) {
+                for (let i = 1; i < cols - 1; i++) {
+                    x[i + 0*cols] = b === 2 ? -x[i + 1*cols] : x[i + 1*cols];
+                    x[i + (rows-1)*cols] = b === 2 ? -x[i + (rows-2)*cols] : x[i + (rows-2)*cols];
+                }
+                
+                for (let j = 1; j < rows - 1; j++) {
+                    x[0 + j*cols] = b === 1 ? -x[1 + j*cols] : x[1 + j*cols];
+                    x[(cols-1) + j*cols] = b === 1 ? -x[(cols-2) + j*cols] : x[(cols-2) + j*cols];
+                }
+                
+                x[0 + 0*cols] = 0.5 * (x[1 + 0*cols] + x[0 + 1*cols]);
+                x[0 + (rows-1)*cols] = 0.5 * (x[1 + (rows-1)*cols] + x[0 + (rows-2)*cols]);
+                x[(cols-1) + 0*cols] = 0.5 * (x[(cols-2) + 0*cols] + x[(cols-1) + 1*cols]);
+                x[(cols-1) + (rows-1)*cols] = 0.5 * (x[(cols-2) + (rows-1)*cols] + x[(cols-1) + (rows-2)*cols]);
+            }
+            
+            p.keyPressed = () => {
+                if (p.key === 's') {
+                    showStreamlines = !showStreamlines;
+                }
+                if (p.key === 'v') {
+                    showVorticity = !showVorticity;
+                }
+                if (p.key === 'r') {
+                    // Reset simulation
+                    for (let i = 0; i < fluid.density.length; i++) {
+                        fluid.density[i] = 0;
+                        fluid.velocityX[i] = 0;
+                        fluid.velocityY[i] = 0;
+                    }
+                }
+            };
+            
+            p.windowResized = () => {
+                p.resizeCanvas(p.min(p.windowWidth, 1200),p.min(p.windowHeight, 800));
+                cols = Math.floor(p.width / resolution);
+                rows = Math.floor(p.height / resolution);
+                
+                // Reinitialize fluid arrays
+                fluid = {
+                    density: new Array(cols * rows).fill(0),
+                    velocityX: new Array(cols * rows).fill(0),
+                    velocityY: new Array(cols * rows).fill(0),
+                    velocityX0: new Array(cols * rows).fill(0),
+                    velocityY0: new Array(cols * rows).fill(0)
+                };
+            };
+        };
+
+        new p5(fluidSimulation);
+    </script>
+
+              
+          
+                
+          
+              
+</body></html>
